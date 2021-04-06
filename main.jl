@@ -7,7 +7,8 @@ using POMDPSimulators: RolloutSimulator
 using POMDPPolicies: FunctionPolicy
 using D3Trees: inchrome
 using StaticArrays: SA
-using Statistics: mean
+using Statistics
+using StatsBase
 
 
 function ValueIteration(S,A,T,R,gamma,size,obj)
@@ -28,15 +29,17 @@ function ValueIteration(S,A,T,R,gamma,size,obj)
 
 	return V[:,1]
 end
-#For Phase 1 we need MCTS function, Phase 2 iterate over states w/ search
+
 function MCTS(m,n,q,t,start,depth,iterations)
     count = 0
+	total_reward = 0
     c = 0.9
     s = start
     while count < iterations
         #Search
         act = search(m,s,n,q,t,depth)
-        #[s,r] = @gen(m,s,act)
+        sp,r = @gen(:sp, :r)(m,s,act)
+		total_reward += r
 
         if isterminal(m,s)
             break
@@ -44,7 +47,7 @@ function MCTS(m,n,q,t,start,depth,iterations)
         count += 1
     end
 
-
+	return total_reward
 end
 function search(m,s,n,q,t,c,depth)
     count = 0
@@ -109,3 +112,40 @@ function sim(depth, m, s, c,q,n,t)
     q[s,act] += (q_value - q[s,act])/n[s,act]
     return q_value
 end
+
+function SQ(MCTS_samples, VI_samples, rH, rL)
+	p_samples = countmap(MCTS_samples)
+	q_samples = countmap(VI_samples)
+	all_samples = [MCTS_samples VI_samples]
+	#Make pdfs
+	h = 0
+	p = []
+	q = []
+	for x in 1:length(p_samples)
+		push!(p,p_samples[x])
+	end
+	for x in 1:length(q_samples)
+		push!(q,q_samples[x])
+	end
+
+	for sample in all_samples
+		if !haskey(p_samples,sample)
+			p_i = 0
+		else
+			p_i = p[sample]
+		end
+		if !haskey(q_samples,sample)
+			q_i = 0
+		else
+			q_i = q[sample]
+		end
+		h += (sqrt(p_i) - sqrt(q_i))^2
+	end
+	h = 1/sqrt(2)*h
+	f = (mode(MCTS_samples)-mode(VI_samples))/(rH-rL)
+	q = sign(mean(MCTS_samples) - mean(VI_samples))*f^0.1*sqrt(h)
+	SQ = 2/(1+exp(-q/5))
+
+	return SQ
+end
+#Phase 1: Simlulate VI, MCTS
