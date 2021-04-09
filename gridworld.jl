@@ -1,3 +1,9 @@
+using DelimitedFiles
+using StaticArrays
+using Parameters: @with_kw
+using POMDPs
+using Random
+
 const GWPos = SVector{2,Int}
 
 """
@@ -12,10 +18,20 @@ The states are represented by 2-element static vectors of integers. Typically an
 - `tprob::Float64`: Probability of a successful transition in the direction specified by the action. The remaining probability is divided between the other neighbors. [default: `0.7`]
 - `discount::Float64`: Discount factor [default: `0.95`]
 """
+
+map_ = readdlm("hazards/haz1_new.txt", ',', Float64)
+d = Dict{GWPos, Float64}()
+for i = 1:(20*20)
+    row = div(i, 20)
+    col = i % 20
+    d[GWPos(row,col)] = -100 * map_[i][1]
+end
+
+
 @with_kw struct SimpleGridWorld <: MDP{GWPos, Symbol}
     size::Tuple{Int, Int}           = (20,20)
-    rewards::Dict{GWPos, Float64}   = Dict(GWPos(4,3)=>-10.0, GWPos(4,6)=>-5.0, GWPos(9,3)=>10.0, GWPos(8,8)=>3.0)
-    terminate_from::Set{GWPos}      = Set(keys(rewards))
+    rewards::Dict{GWPos, Float64}   = d
+    terminate_from::Set{GWPos}      = Set(GWPos(14,17))
     tprob::Float64                  = 0.92
     discount::Float64               = 0.95
 end
