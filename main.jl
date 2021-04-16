@@ -3,12 +3,15 @@ using POMDPModelTools: ordered_states
 using POMDPs: states, stateindex, convert_s
 using LinearAlgebra
 using POMDPs: actions, @gen, isterminal, discount, statetype, actiontype, simulate, states, reward
+using POMDPModelTools
 using POMDPSimulators: RolloutSimulator
 using POMDPPolicies: FunctionPolicy
 using D3Trees: inchrome
 using StaticArrays: SA
 using Statistics
 using StatsBase
+
+include("./gridworld.jl")
 
 
 function ValueIteration(S,A,T,R,gamma,size,obj)
@@ -17,7 +20,7 @@ function ValueIteration(S,A,T,R,gamma,size,obj)
 	A_s = length(A)
 	iterations = 0
 
-	while norm(V - V_p) > 10
+	while norm(V - V_p) > 0.001
 	    V = copy(V_p)
 	    actionValues = zeros(size,A_s)
 	    for action in 1:A_s
@@ -37,7 +40,7 @@ function MCTS(m,n,q,t,start,depth,iterations)
     s = start
     while count < iterations
         #Search
-        act = search(m,s,n,q,t,depth)
+        act = search(m,s,n,q,t,c,depth)
         sp,r = @gen(:sp, :r)(m,s,act)
 		total_reward += r
 
@@ -55,7 +58,8 @@ function search(m,s,n,q,t,c,depth)
         sim(depth, m, s,c,q,n,t)
         count += 1
     end
-    return q,n,t
+	val,index = findmax([q[s,:up],q[s,:down],q[s,:left],q[s,:right],q[s,:upLeft],q[s,:upRight],q[s,:downRight],q[s,:downLeft]])
+	return actions(m)[index]
 end
 
 function best_choice(m,s,depth)
@@ -149,3 +153,19 @@ function SQ(MCTS_samples, VI_samples, rH, rL)
 	return SQ
 end
 #Phase 1: Simlulate VI, MCTS
+m = SimpleGridWorld()
+T = transition_matrices(m)
+R = reward_vectors(m)
+all_states = states(m)
+all_actions = actions(m)
+
+V = ValueIteration(all_states,all_actions,T,R,m.discount,401,m)
+#Need to simulate with V now
+
+S = statetype(m)
+A = actiontype(m)
+n = Dict{Tuple{S, A}, Int}() #number of times node has been tried
+q = Dict{Tuple{S, A}, Float64}() #Q values
+t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
+
+r = MCTS(m,n,q,t,[19, 19],5,100)

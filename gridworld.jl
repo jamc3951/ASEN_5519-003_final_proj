@@ -21,17 +21,18 @@ The states are represented by 2-element static vectors of integers. Typically an
 
 map_ = readdlm("hazards/haz1_new.txt", ',', Float64)
 d = Dict{GWPos, Float64}()
+g = Dict{GWPos, Float64}()
 for i = 1:(20*20)
     row = div(i, 20)
     col = i % 20
-    d[GWPos(row,col)] = -100 * map_[i][1]
+    d[GWPos(row,col)] = -98 * map_[i][1] -2
 end
-
-
+d[GWPos(20,20)] = 200
+g[GWPos(20,20)] = 200
 @with_kw struct SimpleGridWorld <: MDP{GWPos, Symbol}
     size::Tuple{Int, Int}           = (20,20)
     rewards::Dict{GWPos, Float64}   = d
-    terminate_from::Set{GWPos}      = Set(GWPos(14,17))
+    terminate_from::Set{GWPos}      = Set(keys(rewards))
     tprob::Float64                  = 0.92
     discount::Float64               = 0.95
 end
@@ -70,12 +71,12 @@ POMDPs.initialstate(mdp::SimpleGridWorld) = GWUniform(mdp.size)
 
 # Actions
 
-POMDPs.actions(mdp::SimpleGridWorld) = (:up, :down, :left, :right)
+POMDPs.actions(mdp::SimpleGridWorld) = (:up, :upRight, :upLeft, :down, :downLeft, :downRight,:left, :right)
 Base.rand(rng::AbstractRNG, t::NTuple{L,Symbol}) where L = t[rand(rng, 1:length(t))] # don't know why this doesn't work out of the box
 
 
-const dir = Dict(:up=>GWPos(0,1), :down=>GWPos(0,-1), :left=>GWPos(-1,0), :right=>GWPos(1,0))
-const aind = Dict(:up=>1, :down=>2, :left=>3, :right=>4)
+const dir = Dict(:up=>GWPos(0,1), :upRight => GWPos(1,1), :upLeft => GWPos(-1,1),:down=>GWPos(0,-1), :downLeft=>GWPos(-1,-1),:downRight=>GWPos(1,-1),:left=>GWPos(-1,0), :right=>GWPos(1,0))
+const aind = Dict(:up => 1, :upRight => 2, :upLeft => 8, :down => 5, :downLeft => 6, :downRight => 4,:left => 7, :right => 3)
 
 POMDPs.actionindex(mdp::SimpleGridWorld, a::Symbol) = aind[a]
 
