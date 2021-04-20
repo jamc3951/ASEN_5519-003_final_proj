@@ -2,7 +2,7 @@ using POMDPs: actions
 using POMDPModelTools: ordered_states
 using POMDPs: states, stateindex, convert_s
 using LinearAlgebra
-using POMDPs: actions, @gen, isterminal, discount, statetype, actiontype, simulate, states, reward
+using POMDPs: actions, @gen, isterminal, discount, statetype, actiontype, simulate, states, reward, stateindex
 using POMDPModelTools
 using POMDPSimulators: RolloutSimulator
 using POMDPPolicies: FunctionPolicy
@@ -10,6 +10,7 @@ using D3Trees: inchrome
 using StaticArrays: SA
 using Statistics
 using StatsBase
+using Plots
 
 include("./gridworld.jl")
 
@@ -27,7 +28,7 @@ function ValueIteration(S,A,T,R,gamma,size,obj)
 	        actionValues[:,action] = R[A[action]] + gamma*T[A[action]][:, :]*V
 		end
 	    V_p = maximum(actionValues,dims=2)
-	    @show iterations += 1
+	    #@show iterations += 1
 	end
 
 	return V[:,1]
@@ -36,7 +37,7 @@ end
 function MCTS(m,n,q,t,start,depth,iterations)
     count = 0
 	total_reward = 0
-    c = 0.9
+    c = 10
     s = start
     while count < iterations
         #Search
@@ -44,9 +45,13 @@ function MCTS(m,n,q,t,start,depth,iterations)
         sp,r = @gen(:sp, :r)(m,s,act)
 		total_reward += r
 
-        if isterminal(m,s)
+        if isterminal(m,sp)
             break
         end
+		if r == -100.0
+			break
+		end
+		s = sp
         count += 1
     end
 
@@ -54,7 +59,7 @@ function MCTS(m,n,q,t,start,depth,iterations)
 end
 function search(m,s,n,q,t,c,depth)
     count = 0
-    while count < 7
+    while count < 1000
         sim(depth, m, s,c,q,n,t)
         count += 1
     end
@@ -86,7 +91,7 @@ function sim(depth, m, s, c,q,n,t)
             q[s,a] = 0
             #t[s,a,@gen(:sp)(m,s,a)] = 0
         end
-        return simulate(RolloutSimulator(max_steps=depth), m, FunctionPolicy(s->best_choice(m,s,7)), s)
+        return simulate(RolloutSimulator(max_steps=depth), m, FunctionPolicy(s->best_choice(m,s,50)), s)
     end
     #Find UCB recommended action
     acts = []
@@ -152,7 +157,33 @@ function SQ(MCTS_samples, VI_samples, rH, rL)
 
 	return SQ
 end
+function getAction(x, V, R, T, A)
+	y = []
+	for a in 1:length(A)
+		push!(y,R[A[a]][stateindex(m,x)] + sum(V[stateindex(m,x)]*T[A[a]][stateindex(m,x),:]))
+	end
+	val,ind = findmax(y)
+	return actions(m)[ind]
+end
+
+function MCSamples(m,start,V,R,T,A)
+	s = start
+	r = 0
+	rew = 0
+	while isterminal(m,s) == false
+		act = getAction(s,V,R,T,A)
+		@show act
+		sp,rew = @gen(:sp, :r)(m,s,act)
+		r += rew
+		if rew == -100.0
+			break
+		end
+		s = sp
+	end
+	return r
+end
 #Phase 1: Simlulate VI, MCTS
+N_s = 100
 m = SimpleGridWorld()
 T = transition_matrices(m)
 R = reward_vectors(m)
@@ -168,4 +199,14 @@ n = Dict{Tuple{S, A}, Int}() #number of times node has been tried
 q = Dict{Tuple{S, A}, Float64}() #Q values
 t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
 
-r = MCTS(m,n,q,t,[19, 19],5,100)
+start = [11,19]
+VIreward = []
+MCTSreward = []
+for i = 1:N_s
+	@show i
+	r1 = MCSamples(m,start,V,R,T,actions(m))
+	#r2 = MCTS(m,n,q,t,start,100,100)
+	push!(VIreward,r1)
+	#push!(MCTSreward,r2)
+end
+histogram(VIreward)

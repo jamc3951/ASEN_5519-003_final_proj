@@ -27,12 +27,12 @@ for i = 1:(20*20)
     col = i % 20
     d[GWPos(row,col)] = -98 * map_[i][1] -2
 end
-d[GWPos(20,20)] = 200
-g[GWPos(20,20)] = 200
+d[GWPos(2,9)] = 200
+g[GWPos(2,9)] = 200
 @with_kw struct SimpleGridWorld <: MDP{GWPos, Symbol}
     size::Tuple{Int, Int}           = (20,20)
     rewards::Dict{GWPos, Float64}   = d
-    terminate_from::Set{GWPos}      = Set(keys(rewards))
+    terminate_from::Set{GWPos}      = Set(keys(g))
     tprob::Float64                  = 0.92
     discount::Float64               = 0.95
 end
