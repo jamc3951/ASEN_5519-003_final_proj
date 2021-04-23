@@ -34,16 +34,21 @@ function ValueIteration(S,A,T,R,gamma,size,obj)
 	return V[:,1]
 end
 
-function MCTS(m,n,q,t,start,depth,iterations)
+function MCTS(m,n,q,t,start,depth,iterations,costmap)
     count = 0
 	total_reward = 0
-    c = 10
+    c = 1
     s = start
     while count < iterations
         #Search
-        act = search(m,s,n,q,t,c,depth)
+        act = search(m,s,n,q,t,c,depth,costmap)
         sp,r = @gen(:sp, :r)(m,s,act)
 		total_reward += r
+
+		if sp == [2,9]
+			total_reward+= 200.0
+			break
+		end
 
         if isterminal(m,sp)
             break
@@ -51,19 +56,21 @@ function MCTS(m,n,q,t,start,depth,iterations)
 		if r == -100.0
 			break
 		end
+		#@show s,sp, act
 		s = sp
         count += 1
     end
 
 	return total_reward
 end
-function search(m,s,n,q,t,c,depth)
+function search(m,s,n,q,t,c,depth,costmap)
     count = 0
-    while count < 1000
-        sim(depth, m, s,c,q,n,t)
+    while count < 100
+        sim(depth, m, s,c,q,n,t,costmap)
         count += 1
     end
-	val,index = findmax([q[s,:up],q[s,:down],q[s,:left],q[s,:right],q[s,:upLeft],q[s,:upRight],q[s,:downRight],q[s,:downLeft]])
+	val,index = findmax([q[s,:up],q[s,:upRight],q[s,:upLeft],q[s,:down],q[s,:downLeft],q[s,:downRight],q[s,:left],q[s,:right]])
+
 	return actions(m)[index]
 end
 
@@ -78,7 +85,7 @@ function best_choice(m,s,depth)
     return actions(m)[ind]
 end
 
-function sim(depth, m, s, c,q,n,t)
+function sim(depth, m, s, c,q,n,t,costmap)
     if depth <= 0 #at max depth
         return 0.0
     end
@@ -91,20 +98,21 @@ function sim(depth, m, s, c,q,n,t)
             q[s,a] = 0
             #t[s,a,@gen(:sp)(m,s,a)] = 0
         end
-        return simulate(RolloutSimulator(max_steps=depth), m, FunctionPolicy(s->best_choice(m,s,50)), s)
+        return estimateValue(costmap,s)
     end
     #Find UCB recommended action
     acts = []
-    sum = n[s,:up]+ n[s,:down] + n[s,:left] + n[s,:right]
+    num = n[s,:up]+ n[s,:down] + n[s,:left] + n[s,:right]+ n[s,:upRight]+ n[s,:upLeft] + n[s,:downRight] + n[s,:downLeft]
     for a in actions(m)
         if n[s,a] == 0
             push!(acts,10000)
         else
-            push!(acts,q[s,a] + c*sqrt(log(sum)/n[s,a]))
+            push!(acts,q[s,a] + c*sqrt(log(num)/n[s,a]))
         end
     end
     val,index = findmax(acts)
     act = actions(m)[index]
+
     #Take UCB action
     sp,r = @gen(:sp, :r)(m,s,act)
     t[(s, act, sp)] = get(t, (s, act, sp), 0) + 1
@@ -113,56 +121,121 @@ function sim(depth, m, s, c,q,n,t)
         #q[s,act] += r #rest of bellman is zero for terminal
         return r #no need to simulate from here
     end
-
+	if r == -100.0
+		return r
+	end
     n[s,act] += 1
 
     #Not a new node?
-    q_value = r + m.discount*sim(depth-1, m, sp, c,q,n,t)
+    q_value = r + m.discount*sim(depth-1, m, sp, c,q,n,t,costmap)
     q[s,act] += (q_value - q[s,act])/n[s,act]
     return q_value
+end
+function estimateValue(costmap,s)
+	d2g = costmap[2,9,s[1],s[2]]
+
+	if d2g == Inf || d2g == -Inf
+		return -500.0
+	end
+	if d2g == 0.0
+		return 2000.0
+	else
+		return 200.0 - abs(d2g*-2.0)
+	end
+end
+function floydWarshall(grid,sizeX,sizeY)
+	dist = ones(sizeX,sizeY,sizeX, sizeY)*Inf
+
+	for i in 1:sizeX
+		for j in 1:sizeY
+			dist[i,j,i,j] = 0.0
+		end
+	end
+
+	for i in 1:sizeX
+		for j in 1:sizeY
+			if (i > 1) && (grid[i-1,j] == 0.0)
+				dist[i,j,i-1,j] = 1.0
+			end
+			if (i < sizeX - 1) && (grid[i+1,j] == 0.0)
+				dist[i,j,i+1,j] = 1.0
+			end
+			if (j>1) && (grid[i,j-1] == 0.0)
+				dist[i,j,i,j-1] = 1.0
+			end
+			if (j < sizeY -1) && (grid[i,j+1] == 0.0)
+				dist[i,j,i,j+1] = 1.0
+			end
+		end
+	end
+	for kx in 1:sizeX
+		for ky in 1:sizeY
+			for ix in 1:sizeX
+				for iy in 1:sizeY
+					for jx in 1:sizeX
+						for jy in 1:sizeY
+							if dist[ix,iy,jx,jy] > (dist[ix,iy,kx,ky] + dist[kx,ky,jx,jy])
+								dist[ix,iy,jx,jy] = dist[ix,iy,kx,ky] + dist[kx,ky,jx,jy]
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return dist
+
+
+
+
 end
 
 function SQ(MCTS_samples, VI_samples, rH, rL)
 	p_samples = countmap(MCTS_samples)
 	q_samples = countmap(VI_samples)
-	all_samples = [MCTS_samples VI_samples]
+	all_samples = push!(MCTS_samples,VI_samples)
 	#Make pdfs
 	h = 0
 	p = []
 	q = []
-	for x in 1:length(p_samples)
-		push!(p,p_samples[x])
-	end
-	for x in 1:length(q_samples)
-		push!(q,q_samples[x])
+	for x in keys(p_samples)
+		push!(p,p_samples[x]/length(MCTS_samples))
 	end
 
-	for sample in all_samples
-		if !haskey(p_samples,sample)
+	for x in keys(q_samples)
+		push!(q,q_samples[x]/length(VI_samples))
+	end
+
+	for sample in 1:length(unique(all_samples))
+		q_i = 0
+		p_i = 0
+		if !haskey(p_samples,all_samples[sample]) && sample < length(unique(MCTS_samples))
 			p_i = 0
-		else
+		elseif sample < length(unique(MCTS_samples))
 			p_i = p[sample]
 		end
-		if !haskey(q_samples,sample)
+		if !haskey(q_samples,all_samples[sample]) && sample > length(unique(MCTS_samples))
 			q_i = 0
-		else
+		elseif sample > length(unique(MCTS_samples))
 			q_i = q[sample]
 		end
 		h += (sqrt(p_i) - sqrt(q_i))^2
 	end
 	h = 1/sqrt(2)*h
-	f = (mode(MCTS_samples)-mode(VI_samples))/(rH-rL)
-	q = sign(mean(MCTS_samples) - mean(VI_samples))*f^0.1*sqrt(h)
+	@show h
+	f = (mode(MCTS_samples[1])-mode(VI_samples[1]))/(rH-rL)
+	q = sign(mean(MCTS_samples[1]) - mean(VI_samples[1]))*abs(f)^0.1*sqrt(h)
+	@show sign(mean(MCTS_samples[1]) - mean(VI_samples[1]))
 	SQ = 2/(1+exp(-q/5))
 
 	return SQ
 end
 function getAction(x, V, R, T, A)
-	y = []
-	for a in 1:length(A)
-		push!(y,R[A[a]][stateindex(m,x)] + sum(V[stateindex(m,x)]*T[A[a]][stateindex(m,x),:]))
+	y = zeros(401,length(A))
+	for action in 1:length(A)
+		y[:,action] = R[A[action]] + T[A[action]][:, :]*V
 	end
-	val,ind = findmax(y)
+	val,ind = findmax(y[stateindex(m,x),:])
 	return actions(m)[ind]
 end
 
@@ -172,7 +245,6 @@ function MCSamples(m,start,V,R,T,A)
 	rew = 0
 	while isterminal(m,s) == false
 		act = getAction(s,V,R,T,A)
-		@show act
 		sp,rew = @gen(:sp, :r)(m,s,act)
 		r += rew
 		if rew == -100.0
@@ -191,6 +263,7 @@ all_states = states(m)
 all_actions = actions(m)
 
 V = ValueIteration(all_states,all_actions,T,R,m.discount,401,m)
+costmap = floydWarshall(map_,20,20)
 #Need to simulate with V now
 
 S = statetype(m)
@@ -199,14 +272,16 @@ n = Dict{Tuple{S, A}, Int}() #number of times node has been tried
 q = Dict{Tuple{S, A}, Float64}() #Q values
 t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
 
-start = [11,19]
+start = [13,19]
 VIreward = []
 MCTSreward = []
 for i = 1:N_s
 	@show i
 	r1 = MCSamples(m,start,V,R,T,actions(m))
-	#r2 = MCTS(m,n,q,t,start,100,100)
+	r2 = MCTS(m,n,q,t,start,100,80,costmap)
 	push!(VIreward,r1)
-	#push!(MCTSreward,r2)
+	push!(MCTSreward,r2)
 end
-histogram(VIreward)
+histogram(VIreward,bins=100)
+
+SQval = SQ(copy(MCTSreward),copy(VIreward),200.0,-260.0)

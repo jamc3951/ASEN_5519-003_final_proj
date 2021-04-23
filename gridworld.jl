@@ -19,13 +19,13 @@ The states are represented by 2-element static vectors of integers. Typically an
 - `discount::Float64`: Discount factor [default: `0.95`]
 """
 
-map_ = readdlm("hazards/haz1_new.txt", ',', Float64)
+map_ = readdlm("hazards/haz1n_new.txt", ',', Float64)
 d = Dict{GWPos, Float64}()
 g = Dict{GWPos, Float64}()
 for i = 1:(20*20)
     row = div(i, 20)
     col = i % 20
-    d[GWPos(row,col)] = -98 * map_[i][1] -2
+    d[GWPos(19-row,19-col)] = -98 * map_[i][1] -2
 end
 d[GWPos(2,9)] = 200
 g[GWPos(2,9)] = 200
@@ -121,7 +121,7 @@ end
 
 # Rewards
 
-POMDPs.reward(mdp::SimpleGridWorld, s::AbstractVector{Int}) = get(mdp.rewards, s, 0.0)
+POMDPs.reward(mdp::SimpleGridWorld, s::AbstractVector{Int}) = get(mdp.rewards, s, -2.0)
 POMDPs.reward(mdp::SimpleGridWorld, s::AbstractVector{Int}, a::Symbol) = reward(mdp, s)
 
 
