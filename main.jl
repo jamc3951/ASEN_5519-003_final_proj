@@ -22,30 +22,31 @@ function ValueIteration(S,A,T,R,gamma,size,obj)
 	iterations = 0
 
 	while norm(V - V_p) > 0.001
+	#while iterations <= 2
 	    V = copy(V_p)
 	    actionValues = zeros(size,A_s)
 	    for action in 1:A_s
 	        actionValues[:,action] = R[A[action]] + gamma*T[A[action]][:, :]*V
 		end
 	    V_p = maximum(actionValues,dims=2)
-	    #@show iterations += 1
+	    iterations += 1
 	end
 
 	return V[:,1]
 end
 
-function MCTS(m,n,q,t,start,depth,iterations,costmap)
+function MCTS(m,n,q,t,start,depth,iterations,costmap,goal)
     count = 0
 	total_reward = 0
     c = 1
     s = start
     while count < iterations
         #Search
-        act = search(m,s,n,q,t,c,depth,costmap)
+        act = search(m,s,n,q,t,c,depth,costmap,goal)
         sp,r = @gen(:sp, :r)(m,s,act)
 		total_reward += r
 
-		if sp == [2,9]
+		if sp == goal
 			total_reward+= 200.0
 			break
 		end
@@ -63,10 +64,10 @@ function MCTS(m,n,q,t,start,depth,iterations,costmap)
 
 	return total_reward
 end
-function search(m,s,n,q,t,c,depth,costmap)
+function search(m,s,n,q,t,c,depth,costmap,goal)
     count = 0
-    while count < 100
-        sim(depth, m, s,c,q,n,t,costmap)
+    while count < 10
+        sim(depth, m, s,c,q,n,t,costmap,goal)
         count += 1
     end
 	val,index = findmax([q[s,:up],q[s,:upRight],q[s,:upLeft],q[s,:down],q[s,:downLeft],q[s,:downRight],q[s,:left],q[s,:right]])
@@ -85,7 +86,7 @@ function best_choice(m,s,depth)
     return actions(m)[ind]
 end
 
-function sim(depth, m, s, c,q,n,t,costmap)
+function sim(depth, m, s, c,q,n,t,costmap,goal)
     if depth <= 0 #at max depth
         return 0.0
     end
@@ -98,7 +99,7 @@ function sim(depth, m, s, c,q,n,t,costmap)
             q[s,a] = 0
             #t[s,a,@gen(:sp)(m,s,a)] = 0
         end
-        return estimateValue(costmap,s)
+        return estimateValue(costmap,s,goal)
     end
     #Find UCB recommended action
     acts = []
@@ -127,12 +128,12 @@ function sim(depth, m, s, c,q,n,t,costmap)
     n[s,act] += 1
 
     #Not a new node?
-    q_value = r + m.discount*sim(depth-1, m, sp, c,q,n,t,costmap)
+    q_value = r + m.discount*sim(depth-1, m, sp, c,q,n,t,costmap,goal)
     q[s,act] += (q_value - q[s,act])/n[s,act]
     return q_value
 end
-function estimateValue(costmap,s)
-	d2g = costmap[2,9,s[1],s[2]]
+function estimateValue(costmap,s,goal)
+	d2g = costmap[goal[1],goal[2],s[1],s[2]]
 
 	if d2g == Inf || d2g == -Inf
 		return -500.0
@@ -224,7 +225,8 @@ function SQ(MCTS_samples, VI_samples, rH, rL)
 	h = 1/sqrt(2)*h
 	@show h
 	f = (mode(MCTS_samples[1])-mode(VI_samples[1]))/(rH-rL)
-	q = sign(mean(MCTS_samples[1]) - mean(VI_samples[1]))*abs(f)^0.1*sqrt(h)
+	@show f
+	q = sign(mean(MCTS_samples[1]) - mean(VI_samples[1]))*abs(f)^7*sqrt(h)
 	@show sign(mean(MCTS_samples[1]) - mean(VI_samples[1]))
 	SQ = 2/(1+exp(-q/5))
 
@@ -254,6 +256,41 @@ function MCSamples(m,start,V,R,T,A)
 	end
 	return r
 end
+
+function SQ2(map_,V,R,T,A,sizeX,sizeY,costmap,goal,c,depth,n,q,t)
+	#Assume same dist. to start
+	SQ = []
+	count = 0.0
+	better = 0.0
+	#At each state, what does MCTS, VI think you should do
+	#Which is objectively better
+	for i in 1:sizeX
+		for j in 1:sizeY
+			if map_[i,j] != 1.0 && goal != [i,j]
+				VI_act = getAction([i,j],V,R,T,A)
+				MCTS_act = search(m,[i,j],n,q,t,c,depth,costmap,goal)
+
+				if VI_act != MCTS_act
+					count += 1.0
+					sp_VI,rVI = @gen(:sp, :r)(m,[i,j],VI_act)
+					sp_MCTS,rMCTS = @gen(:sp, :r)(m,[i,j],MCTS_act)
+					d2g1 = costmap[goal[1],goal[2],sp_VI[1],sp_VI[2]]
+					d2g2 = costmap[goal[1],goal[2],sp_MCTS[1],sp_MCTS[2]]
+					#Which is better?
+					VI_val = R[VI_act][stateindex(m,[i,j])] + (m.discount^d2g1)*200.0
+					MCTS_val = R[MCTS_act][stateindex(m,[i,j])] + (m.discount^d2g2)*200.0
+
+					if MCTS_val >= VI_val
+						better += 1.0
+					end
+				end
+			end
+		end
+	end
+
+	return (better/count)*2
+end
+
 #Phase 1: Simlulate VI, MCTS
 N_s = 100
 m = SimpleGridWorld()
@@ -273,15 +310,19 @@ q = Dict{Tuple{S, A}, Float64}() #Q values
 t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
 
 start = [13,19]
+goal = [2,9]
 VIreward = []
 MCTSreward = []
 for i = 1:N_s
 	@show i
 	r1 = MCSamples(m,start,V,R,T,actions(m))
-	r2 = MCTS(m,n,q,t,start,100,80,costmap)
+	r2 = MCTS(m,n,q,t,start,100,80,costmap,goal)
 	push!(VIreward,r1)
 	push!(MCTSreward,r2)
 end
-histogram(VIreward,bins=100)
+histogram(VIreward,title="Histogram of VI Rollouts", xlab = "Cumuative Reward", ylab = "Count out of 100",bins=100)
 
-SQval = SQ(copy(MCTSreward),copy(VIreward),200.0,-260.0)
+SQval = SQ(copy(MCTSreward),copy(VIreward),200.0,-70.0)
+SQnew = SQ2(map_,V,R,T,actions(m),20,20,costmap,goal,1,100,n,q,t)
+@show SQval
+@show SQnew
