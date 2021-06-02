@@ -11,7 +11,7 @@ using StaticArrays: SA
 using Statistics
 using StatsBase
 using Plots
-
+using DelimitedFiles
 include("./gridworld.jl")
 
 
@@ -232,7 +232,7 @@ function SQ(MCTS_samples, VI_samples, rH, rL, alpha)
 
 	return SQ
 end
-function getAction(x, V, R, T, A)
+function getAction(m,x, V, R, T, A)
 	y = zeros(401,length(A))
 	for action in 1:length(A)
 		y[:,action] = R[A[action]] + T[A[action]][:, :]*V
@@ -246,7 +246,7 @@ function MCSamples(m,start,V,R,T,A)
 	r = 0
 	rew = 0
 	while isterminal(m,s) == false
-		act = getAction(s,V,R,T,A)
+		act = getAction(m,s,V,R,T,A)
 		sp,rew = @gen(:sp, :r)(m,s,act)
 		r += rew
 		if rew == -100.0 || rew == 200.0 || r < -1000.0
@@ -257,7 +257,7 @@ function MCSamples(m,start,V,R,T,A)
 	return r
 end
 
-function SQ2(map_,V,R,T,A,sizeX,sizeY,costmap,goal,c,depth,n,q,t,iter)
+function SQ2(m,map_,V,R,T,A,sizeX,sizeY,costmap,goal,c,depth,n,q,t,iter)
 	#Assume same dist. to start
 	SQ = []
 	count = 0.0
@@ -267,7 +267,7 @@ function SQ2(map_,V,R,T,A,sizeX,sizeY,costmap,goal,c,depth,n,q,t,iter)
 	for i in 1:sizeX
 		for j in 1:sizeY
 			if map_[i,j] != 1.0 && goal != [i,j]
-				VI_act = getAction([i,j],V,R,T,A)
+				VI_act = getAction(m,[i,j],V,R,T,A)
 				MCTS_act = search(m,[i,j],n,q,t,c,depth,costmap,goal,iter)
 
 				if VI_act != MCTS_act
@@ -294,6 +294,8 @@ end
 function benchmarkSQ(map_,all_states,all_actions,T,R,discount,size,m,start,costmap,goal)
 	iteration_list = 2:5:30
 	search_list = 1:10:100
+	#iteration_list = 2:2:30
+	#search_list = 1:2:100
 	SQ1 = zeros(length(iteration_list),length(search_list))
 	SQtwo = zeros(length(iteration_list),length(search_list))
 	SQ3 = zeros(length(iteration_list),length(search_list))
@@ -307,9 +309,9 @@ function benchmarkSQ(map_,all_states,all_actions,T,R,discount,size,m,start,costm
 			t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
 			#Phase 2
 
-			SQtwo[i,j] = SQ2(map_,V,R,T,actions(m),20,20,costmap,goal,1,100,n,q,t,search_list[j])
+			SQtwo[i,j] = SQ2(m,map_,V,R,T,actions(m),20,20,costmap,goal,1,100,n,q,t,search_list[j])
 			#Phase 3
-			for k = 1:20
+			for k = 1:100
 				@show k
 				r1 = MCSamples(m,start,V,R,T,actions(m))
 				r2 = MCTS(m,n,q,t,start,100,80,costmap,goal,search_list[j])
@@ -325,42 +327,114 @@ function benchmarkSQ(map_,all_states,all_actions,T,R,discount,size,m,start,costm
 	return SQ1,SQtwo,SQ3
 end
 
+function build_GW(name)
+	map_ = readdlm(name, ',', Float64)
+	m = SimpleGridWorld()
+	T = transition_matrices(m)
+	R = reward_vectors(m)
+	all_states = states(m)
+	all_actions = actions(m)
+
+	V = ValueIteration(all_states,all_actions,T,R,m.discount,401,m,50)
+	costmap = floydWarshall(map_,20,20)
+	#Need to simulate with V now
+
+	S = statetype(m)
+	A = actiontype(m)
+	n = Dict{Tuple{S, A}, Int}() #number of times node has been tried
+	q = Dict{Tuple{S, A}, Float64}() #Q values
+	t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
+
+	return m,map_,T,R,all_states,all_actions,V,costmap,S,A,n,q,t
+end
+
+function OA(samples, costmap, start, goal)
+	p_samples = countmap(samples)
+	d2g = costmap[goal[1],goal[2],start[1],start[2]]
+	R_inf = 0#200.0 - abs((d2g + 15.0)*-2.0)
+	@show R_inf
+	L_samples = []
+	U_samples = []
+	s = copy(samples)
+	samples = unique(samples)
+	for sample in samples
+		if sample < R_inf
+			push!(L_samples,sample)
+		end
+		if sample > R_inf
+			push!(U_samples, sample)
+		end
+	end
+
+	LPM = 0.0
+	UPM = 0.0
+	for x in L_samples
+		LPM += (R_inf - x)*(p_samples[x]/length(s))
+	end
+	for x in U_samples
+		UPM += (x - R_inf)*(p_samples[x]/length(s))
+	end
+	xo = 2.0/(1+exp(-log(UPM/LPM))) - 1
+
+	return xo
+end
+
+function getSQ(s,starts,goals)
+	SQ1 = []
+	SQtwo = []
+	SQ3 = []
+	OA1 = []
+	iter = 200
+
+	for ms = 1:length(s)
+		m,map_,T,R,all_states,all_actions,V,costmap,S,A,n,q,t = build_GW(s[ms])
+		VIreward = []
+		MCTSreward = []
+		st = starts[ms]
+		g = goals[ms]
+		for j = 1:length(st)
+			start = st[j]
+			goal = g[j]
+			@show start
+			for i = 1:100
+				r1 = MCSamples(m,start,V,R,T,actions(m))
+				r2 = MCTS(m,n,q,t,start,100,80,costmap,goal,iter)
+				push!(VIreward,r1)
+				push!(MCTSreward,r2)
+			end
+			@show mean(MCTSreward)
+			push!(OA1,OA(copy(MCTSreward),costmap,start,goal))
+			push!(SQ1,SQ(copy(MCTSreward),copy(VIreward),200.0,-260.0,0.5))
+			push!(SQtwo,SQ2(m,map_,V,R,T,actions(m),20,20,costmap,goal,1,100,n,q,t,iter))
+			push!(SQ3, SQ(copy(MCTSreward),copy(VIreward),200.0,-70.0,7))
+		#@show SQval
+		#@show SQnew
+		end
+		#display(histogram(MCTSreward,title="Histogram of MCTS Rollouts", xlab = "Cumulative Reward", ylab = "Count out of 100",bins=100))
+
+	end
+	return SQ1,SQtwo,SQ3,OA1
+end
+
 #Phase 1: Simlulate VI, MCTS
 N_s = 100
-m = SimpleGridWorld()
-T = transition_matrices(m)
-R = reward_vectors(m)
-all_states = states(m)
-all_actions = actions(m)
+s = ["hazards/haz1n_new.txt","hazards/haz2n_new.txt","hazards/haz3_new.txt"]
+#m,map_,T,R,all_states,all_actions,V,costmap,S,A,n,q,t = build_GW("hazards/haz1n_new.txt")
 
-V = ValueIteration(all_states,all_actions,T,R,m.discount,401,m,30)
-costmap = floydWarshall(map_,20,20)
-#Need to simulate with V now
+start1 = [[13,19] , [2,9], [18,18], [17,15], [10,10]]
+goal1 = [[2,9], [18,18], [17,15], [10,10], [10,3]]
 
-S = statetype(m)
-A = actiontype(m)
-n = Dict{Tuple{S, A}, Int}() #number of times node has been tried
-q = Dict{Tuple{S, A}, Float64}() #Q values
-t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
+start2 = [[18,2], [15,19], [7,3], [3,16]]
+goal2 = [[15,19], [7,3], [3,16], [18,7]]
 
-start = [13,19]
-goal = [2,9]
-VIreward = []
-MCTSreward = []
-for i = 1:N_s
-	@show i
-	r1 = MCSamples(m,start,V,R,T,actions(m))
-	r2 = MCTS(m,n,q,t,start,100,80,costmap,goal,1)
-	push!(VIreward,r1)
-	push!(MCTSreward,r2)
-end
-display(histogram(VIreward,title="Histogram of VI Rollouts", xlab = "Cumulative Reward", ylab = "Count out of 100",bins=100))
+start3 = [[18,2], [10,1], [6,12], [4,11]]
+goal3 = [[10,1], [6, 12], [4,11], [5,2]]
 
-SQval = SQ(copy(MCTSreward),copy(VIreward),200.0,-70.0,7)
-SQnew = SQ2(map_,V,R,T,actions(m),20,20,costmap,goal,1,100,n,q,t,1)
-@show SQval
-@show SQnew
+SQ1,SQtwo,SQ3,OA1 = getSQ(s,[start1, start2, start3], [goal1, goal2, goal3])
+
+scatter(SQ1,OA1, title = "Variation over Maps/Tasks",xlab = "SQ", ylab = "OA")
+#display(histogram(MCTSreward,title="Histogram of VI Rollouts", xlab = "Cumulative Reward", ylab = "Count out of 100",bins=100))
 
 
-p1,p2,p3 = benchmarkSQ(map_,all_states,all_actions,T,R,m.discount,401,m,start,costmap,goal)
-#display(contourf(1:6,1:10,(x,y) -> p3[x,y],xaxis = ("VI Iterations [2,30)"),yaxis= ("MCTS Search Time [1,100]"),zlabel = ("SQ"),title = "Phase 3 SQ Variability"))
+#p1,p2,p3 = benchmarkSQ(map_,all_states,all_actions,T,R,m.discount,401,m,start,costmap,goal)
+#display(contourf(1:6,1:10,(x,y) -> p2[x,y],xaxis = ("VI Iterations [2,30)"),yaxis= ("MCTS Search Time [1,100]"),zlabel = ("SQ"),title = "Phase 3 SQ Variability"))
