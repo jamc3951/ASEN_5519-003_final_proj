@@ -13,6 +13,7 @@ using StatsBase
 using Plots
 using DelimitedFiles
 include("./gridworld.jl")
+include("./GOA_PF.jl")
 
 
 function ValueIteration(S,A,T,R,gamma,size,obj,iter)
@@ -31,39 +32,11 @@ function ValueIteration(S,A,T,R,gamma,size,obj,iter)
 	    V_p = maximum(actionValues,dims=2)
 	    iterations += 1
 	end
-
+	@show iterations
 	return V[:,1]
 end
 
-function MCTS(m,n,q,t,start,depth,iterations,costmap,goal,iter)
-    count = 0
-	total_reward = 0
-    c = 1
-    s = start
-    while count < iterations
-        #Search
-        act = search(m,s,n,q,t,c,depth,costmap,goal,iter)
-        sp,r = @gen(:sp, :r)(m,s,act)
-		total_reward += r
 
-		if sp == goal
-			total_reward+= 200.0
-			break
-		end
-
-        if isterminal(m,sp)
-            break
-        end
-		if r == -100.0
-			break
-		end
-		#@show s,sp, act
-		s = sp
-        count += 1
-    end
-
-	return total_reward
-end
 function search(m,s,n,q,t,c,depth,costmap,goal,iter)
     count = 0
     while count < iter
@@ -277,9 +250,10 @@ function SQ2(m,map_,V,R,T,A,sizeX,sizeY,costmap,goal,c,depth,n,q,t,iter)
 					d2g1 = costmap[goal[1],goal[2],sp_VI[1],sp_VI[2]]
 					d2g2 = costmap[goal[1],goal[2],sp_MCTS[1],sp_MCTS[2]]
 					#Which is better?
-					VI_val = R[VI_act][stateindex(m,[i,j])] + (m.discount^d2g1)*200.0
-					MCTS_val = R[MCTS_act][stateindex(m,[i,j])] + (m.discount^d2g2)*200.0
-
+					#VI_val = R[VI_act][stateindex(m,[i,j])] + (m.discount^d2g1)*200.0
+					#MCTS_val = R[MCTS_act][stateindex(m,[i,j])] + (m.discount^d2g2)*200.0
+					VI_val = V[stateindex(m,[sp_VI[1],sp_VI[2]])]
+					MCTS_val = q[[i,j],MCTS_act]
 					if MCTS_val >= VI_val
 						better += 1.0
 					end
@@ -293,15 +267,16 @@ end
 
 function benchmarkSQ(map_,all_states,all_actions,T,R,discount,size,m,start,costmap,goal)
 	iteration_list = 2:5:30
-	search_list = 1:10:100
+	#search_list = 1:10:100
+	depth_list = 1:2:100
 	#iteration_list = 2:2:30
 	#search_list = 1:2:100
-	SQ1 = zeros(length(iteration_list),length(search_list))
-	SQtwo = zeros(length(iteration_list),length(search_list))
-	SQ3 = zeros(length(iteration_list),length(search_list))
+	SQ1 = zeros(length(iteration_list),length(depth_list))
+	SQtwo = zeros(length(iteration_list),length(depth_list))
+	SQ3 = zeros(length(iteration_list),length(depth_list))
 	for i in 1:length(iteration_list)
 		V = ValueIteration(all_states,all_actions,T,R,discount,size,m,iteration_list[i])
-		for j in 1:length(search_list)
+		for j in 1:length(depth_list)
 			VIreward = []
 			MCTSreward = []
 			n = Dict{Tuple{S, A}, Int}() #number of times node has been tried
@@ -309,19 +284,19 @@ function benchmarkSQ(map_,all_states,all_actions,T,R,discount,size,m,start,costm
 			t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
 			#Phase 2
 
-			SQtwo[i,j] = SQ2(m,map_,V,R,T,actions(m),20,20,costmap,goal,1,100,n,q,t,search_list[j])
+			SQtwo[i,j] = SQ2(m,map_,V,R,T,actions(m),20,20,costmap,goal,1,depth_list[j],n,q,t,100)
 			#Phase 3
 			for k = 1:100
 				@show k
 				r1 = MCSamples(m,start,V,R,T,actions(m))
-				r2 = MCTS(m,n,q,t,start,100,80,costmap,goal,search_list[j])
+				r2 = MCTS(m,n,q,t,start,depth_list[j],80,costmap,goal,100)
 				push!(VIreward,r1)
 				push!(MCTSreward,r2)
 			end
 			SQ3[i,j] = SQ(copy(MCTSreward),copy(VIreward),200.0,-70.0,7)
 			#Phase 1
 			SQ1[i,j] = SQ(copy(MCTSreward),copy(VIreward),200.0,-260.0,0.5)
-			@show (iteration_list[i],search_list[j],SQ1[i,j],SQtwo[i,j],SQ3[i,j])
+			@show (iteration_list[i],depth_list[j],SQ1[i,j],SQtwo[i,j],SQ3[i,j])
 		end
 	end
 	return SQ1,SQtwo,SQ3
@@ -335,7 +310,7 @@ function build_GW(name)
 	all_states = states(m)
 	all_actions = actions(m)
 
-	V = ValueIteration(all_states,all_actions,T,R,m.discount,401,m,50)
+	V = ValueIteration(all_states,all_actions,T,R,m.discount,401,m,20)
 	costmap = floydWarshall(map_,20,20)
 	#Need to simulate with V now
 
@@ -348,36 +323,7 @@ function build_GW(name)
 	return m,map_,T,R,all_states,all_actions,V,costmap,S,A,n,q,t
 end
 
-function OA(samples, costmap, start, goal)
-	p_samples = countmap(samples)
-	d2g = costmap[goal[1],goal[2],start[1],start[2]]
-	R_inf = 0#200.0 - abs((d2g + 15.0)*-2.0)
-	@show R_inf
-	L_samples = []
-	U_samples = []
-	s = copy(samples)
-	samples = unique(samples)
-	for sample in samples
-		if sample < R_inf
-			push!(L_samples,sample)
-		end
-		if sample > R_inf
-			push!(U_samples, sample)
-		end
-	end
 
-	LPM = 0.0
-	UPM = 0.0
-	for x in L_samples
-		LPM += (R_inf - x)*(p_samples[x]/length(s))
-	end
-	for x in U_samples
-		UPM += (x - R_inf)*(p_samples[x]/length(s))
-	end
-	xo = 2.0/(1+exp(-log(UPM/LPM))) - 1
-
-	return xo
-end
 
 function getSQ(s,starts,goals)
 	SQ1 = []
@@ -427,14 +373,44 @@ goal1 = [[2,9], [18,18], [17,15], [10,10], [10,3]]
 start2 = [[18,2], [15,19], [7,3], [3,16]]
 goal2 = [[15,19], [7,3], [3,16], [18,7]]
 
-start3 = [[18,2], [10,1], [6,12], [4,11]]
-goal3 = [[10,1], [6, 12], [4,11], [5,2]]
+start3 = [ [6,12], [4,11]]
+goal3 = [[4,11], [5,2]]
 
-SQ1,SQtwo,SQ3,OA1 = getSQ(s,[start1, start2, start3], [goal1, goal2, goal3])
+#SQ1,SQtwo,SQ3,OA1 = getSQ(s,[start1, start2, start3], [goal1, goal2, goal3])
 
-scatter(SQ1,OA1, title = "Variation over Maps/Tasks",xlab = "SQ", ylab = "OA")
+#scatter(SQ1,OA1, title = "Variation over Maps/Tasks 1)",xlab = "SQ", ylab = "OA")
 #display(histogram(MCTSreward,title="Histogram of VI Rollouts", xlab = "Cumulative Reward", ylab = "Count out of 100",bins=100))
 
-
+m,map_,T,R,all_states,all_actions,V,costmap,S,A,n,q,t = build_GW(s[1])
+start = [17,15]
+goal = [10,10]
 #p1,p2,p3 = benchmarkSQ(map_,all_states,all_actions,T,R,m.discount,401,m,start,costmap,goal)
-#display(contourf(1:6,1:10,(x,y) -> p2[x,y],xaxis = ("VI Iterations [2,30)"),yaxis= ("MCTS Search Time [1,100]"),zlabel = ("SQ"),title = "Phase 3 SQ Variability"))
+#display(contourf(1:6,1:10,(x,y) -> p2[x,y],xaxis = ("VI Iterations [2,30)"),yaxis= ("MCTS Search Time [1,100]"),zlabel = ("SQ"),title = "Phase 2 SQ Variability"))
+
+goapf_conf,sgoa,true_goa,a = goa_pf(m,T,start,80,costmap,goal,500,5)
+#conf = goa_online(m,n,q,t,start,80,costmap,goal,5)
+plot(1:length(goapf_conf)-1,goapf_conf[1:end-1],legend=:bottomright, title = "Single Run GOA Online Approach Comparison", ylab = "GOA [-1,1]", xlab = "Time Step", labels = "GOA PF")
+plot!(1:length(goapf_conf)-1,sgoa[1:end-1],labels = "GOA Online (low fidelity)")
+plot!(1:length(true_goa)-1,true_goa[1:end-1], labels = "GOA Online (high fidelity)")
+#=
+x = []
+y = []
+u = []
+v = []
+for key in collect(keys(a))
+	push!(x,key[1][1])
+	push!(y,key[1][2])
+	val = 0
+	new = dir[:up]
+	for at in actions(m)
+		if a[key[1],at] > val
+			new = dir[at]
+			val = a[key[1],at]
+		end
+	end
+	push!(u,new[1])
+	push!(v,new[2])
+end
+quiver(x,y,quiver=(u,v),xlim=(0,20),ylim = (0,20))
+scatter!([start[1], goal[1]],[start[2], goal[2]],color = :red)
+=#
