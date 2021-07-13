@@ -121,7 +121,7 @@ function goa_online(m,n,q,t,start,depth_list,costmap,goal,N)
 	end
 	return confidence
 end
-function SIS2(m,Tm,N_s,C_s,s,goal,n,q,t,depth_list,costmap, a)
+function SIS2(m,Tm,N_s,C_s,s,s_old,goal,n,q,t,depth_list,costmap, a,w_p,o)
 	current_kp = []
 	adversary_kp = []
 	outcomes_kp = [0.0,0.0]
@@ -134,15 +134,11 @@ function SIS2(m,Tm,N_s,C_s,s,goal,n,q,t,depth_list,costmap, a)
 	cs_states = []
 	#Characteristic Samples
 
-	#values(a) = values(a)*0.42
-
-	a2 = copy(a)
 	for j = 1:C_s
 	    #Sample x_k+1
 	    action, outcome, tp, states = MCTS2(m,Tm,copy(n),copy(q),copy(t),s,depth_list,80,costmap,goal,100)
-
 		#Update action map
-		for i = 1:length(states)
+		#=for i = 1:length(states)
 			if !haskey(a2,(states[i],action[i]))
 				for n in actions(m)
 					a[states[i],n] = 0
@@ -150,7 +146,8 @@ function SIS2(m,Tm,N_s,C_s,s,goal,n,q,t,depth_list,costmap, a)
 			else
 				a2[states[i],action[i]] += 1
 			end
-		end
+		end=#
+
 
 	    push!(outcomes,outcome)
 	    push!(traj_actions,action)
@@ -168,58 +165,77 @@ function SIS2(m,Tm,N_s,C_s,s,goal,n,q,t,depth_list,costmap, a)
 	    push!(all_weights,1)
 	end
 
-	#char_weights=char_weights./sum(char_weights);
+	char_weights=char_weights./sum(char_weights);
 	wkp=outcomes_kp
+	outcomes_fkp = [0.0,0.0]
+	c = 0
+	@show wkp
+	if !isempty(a)
+		for acts in a
+			c+=1
+			follower_weights = [0,0]
+			for i = 1:500
+				outc = 0
+				rew = 0.0
+				st = copy(s_old)
+				iterations = 0
+				for ind_acts in acts
+					sp,rew = @gen(:sp, :r)(m,st,ind_acts)
 
-	for i = 1:(N_s-C_s)
-		outc = 0
-		rew = 0.0
-		st = copy(s)
-		iterations = 0
-		new_states = [s]
-		while iterations < 100
-			potential_acts = []
-			for at in actions(m)
-				if !haskey(a,(st,at))
-					push!(potential_acts,0)
+					if rew == 200.0
+						outc = 1
+						break
+					end
+					if rew == -100.0
+						outc = 0
+						break
+					end
+					st = sp
+					#buuucket
+					if abs(sum(st - goal)) < 5
+						outc = 1
+						break
+					end
+				end
+				if outc == 1
+					follower_weights[2] = follower_weights[2] + 1
 				else
-					push!(potential_acts,a[st,at])
+					follower_weights[1] = follower_weights[1] + 1
 				end
 			end
-			val,index = findmax(potential_acts)
-
-			sp,rew = @gen(:sp, :r)(m,st,actions(m)[index])
-			push!(new_states,sp)
-			if rew == 200.0
-				outc = 1
-				break
+			#@show follower_weights
+			follower_weights=follower_weights./sum(follower_weights);
+			if reject(wkp./sum(wkp),follower_weights,0.25) == 1
+				if o[c] == 1
+					outcomes_fkp[2]+=1
+				else
+					outcomes_fkp[1]+=1
+				end
 			end
-			if rew == -100.0
-				outc = 0
-				break
-			end
-			st = sp
-			if st == goal
-				outc = 1
-				break
-			end
-			iterations += 1
 		end
-		a = a2
-
-		if traj_distance(C_s,cs_states,new_states,0.75) == 1
-		    if outc == 1
-		        outcomes_kp[2] = outcomes_kp[2] + 1.0
-		    else
-		        outcomes_kp[1] = outcomes_kp[1] +  1.0
-		    end
+		@show outcomes_fkp
+		if outcomes_fkp != [0.0,0.0]
+			outcomes_kp =  (outcomes_fkp./sum(outcomes_fkp))
+		else
+			outcomes_kp = wkp
 		end
-		@show outcomes_kp
-	    #all_weights = [all_weights; weight(i)];
 	end
-	w_k=outcomes_kp./sum(outcomes_kp);
-	return w_k
+
+
+
+	w_k= outcomes_kp./sum(outcomes_kp)
+	return w_k, traj_actions, outcomes
 end
+
+function reject(observed,simulated,ep)
+	x = observed-simulated
+	@show (x[1]),(x[2])
+	if abs(x[1]) < ep
+		return 1
+	end
+	return 0
+end
+
 function traj_distance(C_s,cs_traj,eval_traj,epsilon)
 	for i = 1:C_s
 		c = 0
@@ -245,24 +261,31 @@ function goa_pf(m,Tm,start,depth_list,costmap,goal,N_s,C_s)
 	confidence_standard = []
 	confidence_truth = []
 	r = 0
-	iterations = 40
+	iterations = 15
 	count = 0
 	rew = 0
 	n = Dict{Tuple{S, A}, Int}() #number of times node has been tried
 	q = Dict{Tuple{S, A}, Float64}() #Q values
 	t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
-	a = Dict{Tuple{S, A}, Float64}()
+	char_k = []
+	s_old = []
+	w_k = [0.5,0.5]
+	op = []
 	while count < iterations
 		outcomes = []
 		outcomes_true = []
-		a = Dict{Tuple{S, A}, Float64}()
-		w_k = SIS2(m,Tm,N_s,C_s,s,goal,n,q,t,depth_list,costmap, a)
+
+		w_k, char_k, op = SIS2(m,Tm,N_s,C_s,s,s_old,goal,copy(n),copy(q),copy(t),depth_list,costmap, char_k, w_k, op)
+		#append!(char_k,ch_k)
+		#append!(op,op_t)
 		@show w_k
-		for i = 1:C_s
+
+		for i = 1:10
 			acts, o, tp, states = MCTS2(m,Tm,copy(n),copy(q),copy(t),s,depth_list,80,costmap,goal,400)
 			push!(outcomes,o)
 		end
-		for i = 1:50
+
+		for i = 1:75
 			acts, otrue , tp, states = MCTS2(m,Tm,copy(n),copy(q),copy(t),s,depth_list,80,costmap,goal,400)
 			push!(outcomes_true,otrue)
 		end
@@ -277,6 +300,7 @@ function goa_pf(m,Tm,start,depth_list,costmap,goal,N_s,C_s)
 			@show rew
 			break
 		end
+		s_old = s
 		s = sp
 		count += 1
 	end
