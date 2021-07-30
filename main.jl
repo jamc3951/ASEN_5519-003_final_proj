@@ -424,12 +424,29 @@ goal = [10,10]
 
 
 #GOA PF Stuff
-goapf_conf,sgoa,true_goa,a = goa_pf(m,T,start,80,costmap,goal,500,12)
-#conf = goa_online(m,n,q,t,start,80,costmap,goal,5)
-plot(1:length(goapf_conf)-1,goapf_conf[1:end-1],legend=:topright, title = "Single Run GOA Online Approach Comparison", ylab = "GOA [-1,1]", xlab = "Time Step", labels = "Approx. (Cs = 10)")
-plot!(1:length(goapf_conf)-1,sgoa[1:end-1],labels = "Cs = 20")
-plot!(1:length(true_goa)-1,true_goa[1:end-1], labels = "Cs = 75")
+goa_pf_error = zeros(1,40)
+sgoa_error = zeros(1,40)
 
+
+goapf_conf,sgoa,true_goa, hist_list, accepts_list,bs_abc,bs_true, bs_std = goa_pf(m,T,start,80,costmap,goal,500,20)
+#conf = goa_online(m,n,q,t,start,80,costmap,goal,5)
+plot(1:length(goapf_conf)-1,goapf_conf[1:end-1],legend=:bottomleft, title = "Single Run GOA Online Approach Comparison", ylab = "GOA [-1,1]", xlab = "Time Step", labels = "Approx. (Cs = 200)")
+plot!(1:length(goapf_conf)-1,sgoa[1:end-1],labels = "Cs = 12")
+plot!(1:length(true_goa)-1,true_goa[1:end-1], labels = "Cs = 200")
+
+goa_pf_error[1:length(true_goa)] += abs.(goapf_conf - true_goa)
+sgoa_error[1:length(true_goa)] += abs.(sgoa - true_goa)
+
+plot(1:length(goapf_conf),hist_list[1:end-1], title = "ABC Contribution to Results",labels = "total backlog")
+plot!(1:length(goapf_conf),accepts_list,labels = "accepted")
+
+
+plot(1:length(goapf_conf),bs_abc,legend=:topright, title = "Single Run BS Comparison", ylab = "BS [0,1]", xlab = "Time Step", labels = "Approx. (Cs = 200)")
+plot!(1:length(goapf_conf),bs_std,labels = "Cs = 12")
+plot!(1:length(true_goa),bs_true, labels = "Cs = 200")
+
+goa_pf_error = goa_pf_error./10
+sgoa_error = sgoa_error./10
 #Quiver Plot
 #=
 x = []

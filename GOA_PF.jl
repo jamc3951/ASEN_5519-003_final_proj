@@ -121,7 +121,7 @@ function goa_online(m,n,q,t,start,depth_list,costmap,goal,N)
 	end
 	return confidence
 end
-function SIS2(m,Tm,N_s,C_s,s,s_old,goal,n,q,t,depth_list,costmap, a,w_p,o)
+function SIS2(m,Tm,N_s,C_s,s,s_old,goal,n,q,t,depth_list,costmap, hist_sample,w_p)
 	current_kp = []
 	adversary_kp = []
 	outcomes_kp = [0.0,0.0]
@@ -150,7 +150,7 @@ function SIS2(m,Tm,N_s,C_s,s,s_old,goal,n,q,t,depth_list,costmap, a,w_p,o)
 
 
 	    push!(outcomes,outcome)
-	    push!(traj_actions,action)
+	    push!(traj_actions,[s,outcome,action])
 		push!(transitions,tp)
 	    #char_weights(j)=mvnpdf([current_kp(j,:),adversary_kp(j,:)],ykp,abs([current_kp(j,:),adversary_kp(j,:)]- ykp).*eye(4) + eye(4));
 	    push!(char_weights,1.0)
@@ -169,17 +169,19 @@ function SIS2(m,Tm,N_s,C_s,s,s_old,goal,n,q,t,depth_list,costmap, a,w_p,o)
 	wkp=outcomes_kp
 	outcomes_fkp = [0.0,0.0]
 	c = 0
+	accept = 0
 	@show wkp
-	if !isempty(a)
-		for acts in a
+	if !isempty(hist_sample)
+		for acts in hist_sample
 			c+=1
 			follower_weights = [0,0]
+
 			for i = 1:500
 				outc = 0
 				rew = 0.0
-				st = copy(s_old)
+				st = [acts[1][1],acts[1][2]]
 				iterations = 0
-				for ind_acts in acts
+				for ind_acts in acts[3]
 					sp,rew = @gen(:sp, :r)(m,st,ind_acts)
 
 					if rew == 200.0
@@ -192,7 +194,7 @@ function SIS2(m,Tm,N_s,C_s,s,s_old,goal,n,q,t,depth_list,costmap, a,w_p,o)
 					end
 					st = sp
 					#buuucket
-					if abs(sum(st - goal)) < 5
+					if abs(sum(st - goal)) < 4
 						outc = 1
 						break
 					end
@@ -205,8 +207,9 @@ function SIS2(m,Tm,N_s,C_s,s,s_old,goal,n,q,t,depth_list,costmap, a,w_p,o)
 			end
 			#@show follower_weights
 			follower_weights=follower_weights./sum(follower_weights);
-			if reject(wkp./sum(wkp),follower_weights,0.25) == 1
-				if o[c] == 1
+			if reject(wkp./sum(wkp),follower_weights,0.1) == 1
+				accept += 1
+				if acts[2] == 1
 					outcomes_fkp[2]+=1
 				else
 					outcomes_fkp[1]+=1
@@ -214,22 +217,23 @@ function SIS2(m,Tm,N_s,C_s,s,s_old,goal,n,q,t,depth_list,costmap, a,w_p,o)
 			end
 		end
 		@show outcomes_fkp
-		if outcomes_fkp != [0.0,0.0]
+		if sum(outcomes_fkp) > 20
 			outcomes_kp =  (outcomes_fkp./sum(outcomes_fkp))
 		else
+			accept = 0
 			outcomes_kp = wkp
 		end
 	end
-
+	@show sum(outcomes_fkp)
 
 
 	w_k= outcomes_kp./sum(outcomes_kp)
-	return w_k, traj_actions, outcomes
+	return w_k, traj_actions, accept
 end
 
 function reject(observed,simulated,ep)
 	x = observed-simulated
-	@show (x[1]),(x[2])
+	#@show (x[1]),(x[2])
 	if abs(x[1]) < ep
 		return 1
 	end
@@ -254,6 +258,26 @@ function traj_distance(C_s,cs_traj,eval_traj,epsilon)
 	return 1
 end
 
+function BS(m,Tm,n,q,t,s,depth_list,costmap,goal, o_true, o_bad, abc_weights, N)
+	bs_true = 0
+	bs_bad = 0
+	bs_abc = 0
+
+	ps_true = sum(o_true)/length(o_true)
+	ps_bad = sum(o_bad)/length(o_bad)
+	for i = 1:N
+		acts, o, tp, states = MCTS2(m,Tm,copy(n),copy(q),copy(t),s,depth_list,80,costmap,goal,400)
+
+		bs_abc += (abc_weights[2] - o)^2
+		bs_true += (ps_true - o)^2
+		bs_bad += (ps_bad - o)^2
+	end
+	bs_abc = bs_abc ./N
+	bs_true = bs_true ./N
+	bs_bad = bs_bad ./N
+
+	return bs_abc,bs_true,bs_bad
+end
 
 function goa_pf(m,Tm,start,depth_list,costmap,goal,N_s,C_s)
 	s = start
@@ -269,29 +293,45 @@ function goa_pf(m,Tm,start,depth_list,costmap,goal,N_s,C_s)
 	t = Dict{Tuple{S, A, S}, Int}() #times transition was generated
 	char_k = []
 	s_old = []
+	accepts_list = []
+	hist_list = []
+	bs_abc = []
+	bs_true = []
+	bs_std = []
+	for i = 1:3*C_s
+		acts,o, tp, states = MCTS2(m,Tm,copy(n),copy(q),copy(t),s,depth_list,80,costmap,goal,400)
+		push!(char_k,[s,o,acts])
+	end
+	push!(hist_list,length(char_k))
 	w_k = [0.5,0.5]
-	op = []
 	while count < iterations
 		outcomes = []
 		outcomes_true = []
 
-		w_k, char_k, op = SIS2(m,Tm,N_s,C_s,s,s_old,goal,copy(n),copy(q),copy(t),depth_list,costmap, char_k, w_k, op)
-		#append!(char_k,ch_k)
-		#append!(op,op_t)
+		w_k, ch_k, accepts = SIS2(m,Tm,N_s,C_s,s,s_old,goal,copy(n),copy(q),copy(t),depth_list,costmap, char_k, w_k)
+		append!(char_k,ch_k)
+		push!(hist_list,length(char_k))
+		append!(accepts_list, accepts)
 		@show w_k
 
-		for i = 1:10
+		for i = 1:12
 			acts, o, tp, states = MCTS2(m,Tm,copy(n),copy(q),copy(t),s,depth_list,80,costmap,goal,400)
 			push!(outcomes,o)
 		end
 
-		for i = 1:75
+		for i = 1:50
 			acts, otrue , tp, states = MCTS2(m,Tm,copy(n),copy(q),copy(t),s,depth_list,80,costmap,goal,400)
 			push!(outcomes_true,otrue)
 		end
 		push!(confidence_standard,goa(outcomes,[-0.5,0.5,1],2))
 		push!(confidence_truth,goa(outcomes_true,[-0.5,0.5,1],2))
 		push!(confidence,goa(float(sample([0.0,1.0],Weights(w_k),N_s)),[-0.5,0.5,1.0],2))
+
+		bs1,bs2,bs3 = BS(m,Tm,copy(n),copy(q),copy(t),s,depth_list,costmap,goal, outcomes_true, outcomes, w_k, 10)
+		push!(bs_abc,bs1)
+		push!(bs_true,bs2)
+		push!(bs_std,bs3)
+
 		act = search(m,s,n,q,t,1,depth_list,costmap,goal,100)
 		sp,rew = @gen(:sp, :r)(m,s,act)
 
@@ -300,11 +340,11 @@ function goa_pf(m,Tm,start,depth_list,costmap,goal,N_s,C_s)
 			@show rew
 			break
 		end
-		s_old = s
+		append!(s_old,s)
 		s = sp
 		count += 1
 	end
-	return confidence, confidence_standard, confidence_truth, a
+	return confidence, confidence_standard, confidence_truth, hist_list, accepts_list, bs_abc,bs_true, bs_std
 end
 
 function OA(samples, costmap, start, goal)
